@@ -1,8 +1,10 @@
+
 from google import genai
+from google.genai.errors import ServerError
 from dotenv import load_dotenv
 import os
 import json
-
+import time
 
 load_dotenv()
 
@@ -17,14 +19,10 @@ def generate_final_response(state):
 You are CareerPilot, an AI career advisor.
 
 The user asked:
-
 {state.goal}
 
-The target role extracted from the user's request is:
-
+Target role:
 {state.target_role}
-
-You have completed an agent workflow.
 
 ROLE REQUIREMENTS:
 {json.dumps(state.role_analysis, indent=2)}
@@ -41,41 +39,19 @@ LEARNING PLAN:
 RESUME EVIDENCE:
 {state.resume_evidence}
 
-
 IMPORTANT GROUNDING RULES:
 
-1. The MATCH RESULT is authoritative for the match percentage,
+1. MATCH RESULT is authoritative for match percentage,
    matched skills, and missing skills.
-
-2. NEVER invent additional missing skills.
-
-3. Only list missing skills that appear inside:
-   MATCH RESULT -> missing_skills
-
-4. Only list matched skills that appear inside:
-   MATCH RESULT -> matched_skills
-
-5. Use CANDIDATE ANALYSIS to explain the evidence for matched skills.
-
-6. Use RESUME EVIDENCE only to support claims about the candidate.
-
-7. Do not claim the candidate has a technology unless it is
-   supported by the supplied candidate analysis or resume evidence.
-
-8. Do not add technologies such as Data Pipelines, AWS,
-   Kubernetes, PyTorch, TensorFlow, MLOps, etc. unless they
-   actually appear in the supplied data.
-
-9. Do not change the calculated match percentage.
-
-10. If the evidence is insufficient, explicitly say:
-    "The resume does not provide clear evidence for this."
-
-11. Do not make up experience.
-
-12. Do not introduce new requirements that were not returned
-    by the role analysis.
-
+2. Never invent additional missing skills.
+3. Only list skills present in MATCH RESULT.
+4. Use CANDIDATE ANALYSIS to explain matched skills.
+5. Use RESUME EVIDENCE to support candidate claims.
+6. Do not invent experience or technologies.
+7. Do not change the calculated match percentage.
+8. If evidence is insufficient, say:
+   "The resume does not provide clear evidence for this."
+9. Do not introduce requirements absent from ROLE ANALYSIS.
 
 Generate a concise but useful career analysis.
 
@@ -98,9 +74,45 @@ Use exactly this structure:
 ## Recommended Next Steps
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=prompt
+    primary_model = os.getenv(
+        "GEMINI_MODEL", "gemini-3.5-flash-lite"
     )
 
-    return response.text
+    fallback_model = os.getenv(
+        "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash"
+    )
+
+    models = list(dict.fromkeys([primary_model, fallback_model]))
+    last_error = None
+
+    for model in models:
+        for attempt in range(3):
+            try:
+                print(
+                    f"Generating final response using {model} "
+                    f"(attempt {attempt + 1}/3)"
+                )
+
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt
+                )
+
+                if not response.text:
+                    raise ValueError(
+                        "Gemini returned an empty final response."
+                    )
+
+                return response.text
+
+            except ServerError as error:
+                last_error = error
+                print(f"Gemini server error: {error}")
+
+                if attempt < 2:
+                    time.sleep(2 ** (attempt + 1))
+
+    raise RuntimeError(
+        f"Final response generation failed. "
+        f"Models attempted: {models}. Last error: {last_error}"
+    )
