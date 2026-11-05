@@ -399,6 +399,7 @@ def test_error_tool(message):
 # ANALYZE CANDIDATE SKILLS
 # =========================================================
 
+
 def analyze_candidate_skills(
     role,
     role_skills,
@@ -452,17 +453,71 @@ Rules:
 - Be conservative and evidence-based.
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": CandidateSkillAnalysisOutput,
-        },
+    primary_model = os.getenv(
+        "GEMINI_MODEL",
+        "gemini-3.5-flash-lite"
     )
 
-    result = CandidateSkillAnalysisOutput.model_validate_json(
-        response.text
+    fallback_model = os.getenv(
+        "GEMINI_FALLBACK_MODEL",
+        "gemini-3.5-flash"
     )
 
-    return result.model_dump()
+    models = list(dict.fromkeys([
+        primary_model,
+        fallback_model
+    ]))
+
+    last_error = None
+
+    for model in models:
+
+        for attempt in range(3):
+
+            try:
+                print(
+                    f"🤖 Candidate analysis using {model} "
+                    f"(attempt {attempt + 1}/3)"
+                )
+
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": CandidateSkillAnalysisOutput,
+                    }
+                )
+
+                if not response.text:
+                    raise ValueError(
+                        "Gemini returned an empty response."
+                    )
+
+                result = CandidateSkillAnalysisOutput.model_validate_json(
+                    response.text
+                )
+
+                return result.model_dump()
+
+            except ServerError as error:
+
+                last_error = error
+
+                print(
+                    f"⚠️ {model} temporarily unavailable: {error}"
+                )
+
+                if attempt < 2:
+                    wait_time = 2 ** (attempt + 1)
+
+                    print(
+                        f"🔄 Retrying in {wait_time} seconds..."
+                    )
+
+                    time.sleep(wait_time)
+
+    raise RuntimeError(
+        f"Candidate skill analysis failed after retries: {last_error}"
+    ) from last_error
+
