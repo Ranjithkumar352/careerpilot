@@ -1,11 +1,13 @@
+
 import os
 import json
+import time
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai.errors import ServerError
 
 from schemas import AgentState
-
 
 load_dotenv()
 
@@ -47,9 +49,7 @@ Conversation history:
 {json.dumps(memory.get_history(), indent=2)}
 
 The user now says:
-
 {user_message}
-
 
 Your task is to answer the user's follow-up question
 using the previous CareerPilot state.
@@ -69,9 +69,45 @@ IMPORTANT:
 9. Keep the response practical and concise.
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=prompt
+    primary_model = os.getenv(
+        "GEMINI_MODEL", "gemini-3.5-flash-lite"
     )
 
-    return response.text
+    fallback_model = os.getenv(
+        "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash"
+    )
+
+    models = list(dict.fromkeys([primary_model, fallback_model]))
+    last_error = None
+
+    for model in models:
+        for attempt in range(3):
+            try:
+                print(
+                    f"Follow-up chat using {model} "
+                    f"(attempt {attempt + 1}/3)"
+                )
+
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt
+                )
+
+                if not response.text:
+                    raise ValueError(
+                        "Gemini returned an empty follow-up response."
+                    )
+
+                return response.text.strip()
+
+            except ServerError as error:
+                last_error = error
+                print(f"Gemini server error: {error}")
+
+                if attempt < 2:
+                    time.sleep(2 ** (attempt + 1))
+
+    raise RuntimeError(
+        f"Follow-up response failed. "
+        f"Models attempted: {models}. Last error: {last_error}"
+    )
